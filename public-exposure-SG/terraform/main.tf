@@ -19,9 +19,20 @@ resource "aws_security_group" "public_ssh_sg" {
   }
 }
 
+data "aws_ami" "al2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+}
+
+
 resource "aws_instance" "public_ec2" {
-  ami                    = "ami-0c9c942bd7bf113a2" # Amazon Linux 2023 (서울)
-  instance_type     = "t2.micro"
+  ami           = data.aws_ami.al2023.id
+  instance_type = "t2.micro"
   vpc_security_group_ids = [aws_security_group.public_ssh_sg.id]
 
   associate_public_ip_address = true
