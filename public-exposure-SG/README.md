@@ -1,4 +1,4 @@
-# Public EC2 Exposure Detection & Guardrail Automation
+# Public EC2 Exposure Detection & Guardrail Automation  
 
 ## 1. 프로젝트 개요
 
