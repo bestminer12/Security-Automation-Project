@@ -1,0 +1,18 @@
+[ Terraform ]
+     |
+     v
+[ EC2 + Public IP + Open to Public setup to SG(0.0.0.0/0)]
+     |
+     v
+[ CloudTrail / EventBridge ]
+     |
+     v
+[ Lambda Detector ]
+     |
+     +--> Slack Alert
+     |
+     v
+[ Lambda Remediator ]
+     |
+     v
+[ Security Group Hardened ]
