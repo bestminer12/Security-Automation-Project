@@ -26,11 +26,15 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-
+      
       - name: Terraform Init
+        working-directory: public-exposure-SG/terraform
         run: terraform init
+      
+      - name: Terraform Plan
         working-directory: public-exposure-SG/terraform
-
+        run: terraform plan
+      
       - name: Terraform Apply
-        run: terraform apply -auto-approve
         working-directory: public-exposure-SG/terraform
+        run: terraform apply -auto-approve
