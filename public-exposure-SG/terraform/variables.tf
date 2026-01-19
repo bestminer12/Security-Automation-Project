@@ -3,5 +3,7 @@ variable "aws_region" {
 }
 
 variable "key_name" {
-  description = "EC2 SSH key pair name"
+  description = "EC2 SSH key pair name (optional)"
+  type        = string
+  default     = null
 }
