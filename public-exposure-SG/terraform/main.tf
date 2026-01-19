@@ -22,7 +22,6 @@ resource "aws_security_group" "public_ssh_sg" {
 resource "aws_instance" "public_ec2" {
   ami                    = "ami-0c9c942bd7bf113a2" # Amazon Linux 2023 (서울)
   instance_type          = "t2.micro"
-  key_name               = var.key_name
   vpc_security_group_ids = [aws_security_group.public_ssh_sg.id]
 
   associate_public_ip_address = true
