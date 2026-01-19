@@ -32,7 +32,7 @@ data "aws_ami" "al2023" {
 
 resource "aws_instance" "public_ec2" {
   ami           = data.aws_ami.al2023.id
-  instance_type = "t2.micro"
+  instance_type = "t3.micro"
   vpc_security_group_ids = [aws_security_group.public_ssh_sg.id]
 
   associate_public_ip_address = true
