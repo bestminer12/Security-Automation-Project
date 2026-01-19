@@ -1,7 +1,7 @@
 
 resource "aws_security_group" "public_ssh_sg" {
   name        = "public-ssh-sg"
-  description = "Public SSH open (intentional misconfig)"
+  description = "Public SSH open (intentional misconfig) "
 
   ingress {
     description = "SSH from anywhere"
