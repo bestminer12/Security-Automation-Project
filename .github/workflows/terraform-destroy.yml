@@ -1,4 +1,4 @@
-name: Terraform Destroy
+name: Terraform Destroy 
 
 on:
   workflow_dispatch:   # 버튼 눌러서 수동 실행
