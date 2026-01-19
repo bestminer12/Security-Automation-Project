@@ -1,1 +1,36 @@
 
+name: Terraform Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write   
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: public-exposure-SG/terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+        working-directory: public-exposure-SG/terraform
