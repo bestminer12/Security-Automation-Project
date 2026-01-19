@@ -10,6 +10,9 @@ permissions:
 jobs:
   destroy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: public-exposure-SG/terraform
 
     steps:
       - name: Checkout
