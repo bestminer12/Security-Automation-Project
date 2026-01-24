@@ -13,6 +13,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: prod   # ✅ 이 한 줄이 승인 게이트
 
     steps:
       - name: Checkout
