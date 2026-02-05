@@ -4,56 +4,88 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 
-def _get(d, path, default="N/A"):
-    """Safely get nested dict values. path example: ('detail','userIdentity','arn')"""
+def _get(d, path, default=None):
     cur = d
     for p in path:
         if isinstance(cur, dict) and p in cur:
             cur = cur[p]
         else:
             return default
-    return cur if cur is not None else default
+    return cur
+
+def _first(*vals, default="N/A"):
+    for v in vals:
+        if v is None:
+            continue
+        if isinstance(v, str) and v.strip() == "":
+            continue
+        return v
+    return default
 
 def post_to_discord_embed(event: dict):
     url = os.environ["DISCORD_WEBHOOK_URL"].strip().strip('"').strip("'")
 
-    # Extract key fields from CloudTrail event delivered via EventBridge
-    account = _get(event, ("account",), "N/A")
-    region = _get(event, ("region",), "N/A")
+    detail = event.get("detail", {}) if isinstance(event, dict) else {}
 
-    event_name = _get(event, ("detail", "eventName"), "CreateAccessKey")
-    event_source = _get(event, ("detail", "eventSource"), "iam.amazonaws.com")
+    # CloudTrail fields (most reliable)
+    region = _first(
+        _get(detail, ("awsRegion",)),
+        _get(event, ("region",)),
+    )
 
-    actor_arn = _get(event, ("detail", "userIdentity", "arn"), "N/A")
-    actor_type = _get(event, ("detail", "userIdentity", "type"), "N/A")
-    principal = _get(event, ("detail", "userIdentity", "principalId"), "N/A")
+    account = _first(
+        _get(detail, ("userIdentity", "accountId")),
+        _get(event, ("account",)),
+    )
 
-    source_ip = _get(event, ("detail", "sourceIPAddress"), "N/A")
-    user_agent = _get(event, ("detail", "userAgent"), "N/A")
+    event_name = _first(_get(detail, ("eventName",)), default="CreateAccessKey")
+    event_source = _first(_get(detail, ("eventSource",)), default="iam.amazonaws.com")
 
-    # For CreateAccessKey, CloudTrail typically includes the created accessKeyId in responseElements
-    created_access_key_id = _get(event, ("detail", "responseElements", "accessKey", "accessKeyId"), "N/A")
+    user_identity = detail.get("userIdentity", {}) if isinstance(detail.get("userIdentity"), dict) else {}
 
-    # Target user name can appear depending on who created the key (requestParameters.userName)
-    target_user = _get(event, ("detail", "requestParameters", "userName"), "N/A")
+    actor_arn = _first(
+        user_identity.get("arn"),
+        user_identity.get("principalId"),  # fallback
+    )
 
-    event_time = _get(event, ("detail", "eventTime"), None)
-    if not event_time:
-        event_time = datetime.now(timezone.utc).isoformat()
+    actor_type = _first(user_identity.get("type"))
+    principal_id = _first(user_identity.get("principalId"))
 
-    # A short preview to aid triage (keep it small so Discord doesn't get too noisy)
+    # Prefer requestParameters.userName (the user whose key is being created)
+    req_params = detail.get("requestParameters", {}) if isinstance(detail.get("requestParameters"), dict) else {}
+    target_user = _first(
+        req_params.get("userName"),
+        user_identity.get("userName"),
+    )
+
+    source_ip = _first(_get(detail, ("sourceIPAddress",)))
+    user_agent = _first(_get(detail, ("userAgent",)))
+
+    # Created key id
+    created_access_key_id = _first(
+        _get(detail, ("responseElements", "accessKey", "accessKeyId")),
+        _get(detail, ("responseElements", "accessKeyId")),  # rare shape
+    )
+
+    # Event time
+    event_time = _first(
+        _get(detail, ("eventTime",)),
+        datetime.now(timezone.utc).isoformat(),
+        default=datetime.now(timezone.utc).isoformat()
+    )
+
+    # If anything is still N/A, show a short hint in preview
     detail_preview = {
         "eventName": event_name,
         "eventSource": event_source,
-        "awsRegion": _get(event, ("detail", "awsRegion"), region),
-        "sourceIPAddress": source_ip,
-        "userAgent": user_agent if isinstance(user_agent, str) else "N/A",
-        "requestParameters": _get(event, ("detail", "requestParameters"), {}),
+        "awsRegion": _first(_get(detail, ("awsRegion",)), default="N/A"),
+        "sourceIPAddress": _first(_get(detail, ("sourceIPAddress",)), default="N/A"),
+        "userName": _first(user_identity.get("userName"), default="N/A"),
+        "requestParameters": req_params if req_params else {},
     }
 
-    # Discord embed payload
     payload = {
-        "content": "",  # keep empty; embed is the main card
+        "content": "",
         "embeds": [
             {
                 "title": "🚨 SECURITY EVENT DETECTED",
@@ -66,7 +98,7 @@ def post_to_discord_embed(event: dict):
 
                     {"name": "Account", "value": f"`{account}`", "inline": True},
                     {"name": "Actor", "value": f"`{actor_type}`\n{actor_arn}", "inline": False},
-                    {"name": "PrincipalId", "value": f"`{principal}`", "inline": False},
+                    {"name": "PrincipalId", "value": f"`{principal_id}`", "inline": False},
 
                     {"name": "Target User", "value": f"`{target_user}`", "inline": True},
                     {"name": "Created AccessKeyId", "value": f"`{created_access_key_id}`", "inline": True},
@@ -78,12 +110,10 @@ def post_to_discord_embed(event: dict):
                         "inline": False,
                     },
                 ],
-                "footer": {
-                    "text": "AWS EventBridge → Lambda → Discord | Security Automation"
-                },
+                "footer": {"text": "AWS EventBridge → Lambda → Discord | Security Automation"},
                 "timestamp": event_time,
             }
-        ]
+        ],
     }
 
     data = json.dumps(payload).encode("utf-8")
@@ -92,9 +122,9 @@ def post_to_discord_embed(event: dict):
         data=data,
         headers={
             "Content-Type": "application/json",
-            "User-Agent": "aws-lambda-discord-notifier"
+            "User-Agent": "aws-lambda-discord-notifier",
         },
-        method="POST"
+        method="POST",
     )
 
     try:
@@ -107,8 +137,9 @@ def post_to_discord_embed(event: dict):
         raise
 
 def lambda_handler(event, context):
-    # Useful for debugging actual incoming events
-    print("event", json.dumps(event)[:1500])
+    # Log a bit of the incoming event for troubleshooting
+    print("event_keys", list(event.keys()) if isinstance(event, dict) else type(event))
+    print("detail_keys", list(event.get("detail", {}).keys()) if isinstance(event, dict) else "N/A")
 
     post_to_discord_embed(event)
     return {"statusCode": 200, "body": "ok"}
