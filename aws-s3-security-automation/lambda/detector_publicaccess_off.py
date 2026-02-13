@@ -1,36 +1,19 @@
 import json
 import os
-import urllib.request
 from typing import Any, Dict, Optional, Tuple
-from botocore.exceptions import ClientError
-from urllib.error import HTTPError
+
 import boto3
+from botocore.exceptions import ClientError
 
-
-
-
+# AWS clients
 s3 = boto3.client("s3")
-s3control = boto3.client("s3control")  # sometimes useful depending on event shape
-
 sns = boto3.client("sns")
+
+# Env vars
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 LAB_BUCKET_TAG_KEY = os.environ.get("LAB_BUCKET_TAG_KEY", "Project")
 LAB_BUCKET_TAG_VALUE = os.environ.get("LAB_BUCKET_TAG_VALUE", "S3ExposureLab")
 
-def _send_email_alert(subject: str, message: str) -> None:
-    if not SNS_TOPIC_ARN:
-        print("SNS_TOPIC_ARN is not set; skipping SNS publish.")
-        print(subject)
-        print(message)
-        return
-
-    resp = sns.publish(
-        TopicArn=SNS_TOPIC_ARN,
-        Subject=subject[:100],  # SNS subject 제한 고려
-        Message=message
-    )
-    print("SNS publish ok:", resp.get("MessageId"))
 
 def _safe_get(d: Dict[str, Any], *keys: str) -> Optional[Any]:
     cur: Any = d
@@ -43,14 +26,13 @@ def _safe_get(d: Dict[str, Any], *keys: str) -> Optional[Any]:
 
 def _extract_bucket_name(event: Dict[str, Any]) -> Optional[str]:
     """
-    CloudTrail event shapes vary.
-    For PutPublicAccessBlock, bucket name can show up in:
+    CloudTrail event shapes can vary.
+    For PutPublicAccessBlock, bucket name commonly appears in:
       detail.requestParameters.bucketName
       detail.requestParameters.bucket
-      detail.requestParameters.publicAccessBlockConfiguration.bucketName (rare)
-    We'll try multiple.
+    We'll try multiple keys.
     """
-    detail = event.get("detail", {})
+    detail = event.get("detail", {}) or {}
     rp = detail.get("requestParameters", {}) or {}
 
     for key in ("bucketName", "bucket"):
@@ -58,7 +40,7 @@ def _extract_bucket_name(event: Dict[str, Any]) -> Optional[str]:
         if isinstance(v, str) and v:
             return v
 
-    # Fallback: some shapes nest config
+    # fallback: sometimes nested
     pab = rp.get("publicAccessBlockConfiguration") or rp.get("PublicAccessBlockConfiguration")
     if isinstance(pab, dict):
         v = pab.get("bucketName") or pab.get("bucket")
@@ -69,16 +51,18 @@ def _extract_bucket_name(event: Dict[str, Any]) -> Optional[str]:
 
 
 def _get_bucket_tags(bucket: str) -> Dict[str, str]:
+    """
+    Return bucket tags as a dict. If no tags, return {}.
+    """
     try:
         resp = s3.get_bucket_tagging(Bucket=bucket)
         return {t["Key"]: t["Value"] for t in resp.get("TagSet", [])}
 
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "Unknown")
-        # 태그가 없을 때 보통 이 코드로 옴
+        # If no tags exist, AWS often returns NoSuchTagSet
         if code in ("NoSuchTagSet", "NoSuchTagSetError", "NoSuchTagSetException"):
             return {}
-        # 버킷이 없거나 권한 문제 등은 로그 남기고 빈 값 처리(또는 raise)
         print(f"get_bucket_tagging ClientError for {bucket}: {code} {e}")
         return {}
 
@@ -88,26 +72,46 @@ def _get_bucket_tags(bucket: str) -> Dict[str, str]:
 
 
 def _is_lab_bucket(bucket: str) -> bool:
+    """
+    Strict allowlist:
+    process only buckets tagged Project=S3ExposureLab (configurable via env).
+    """
     tags = _get_bucket_tags(bucket)
     if not tags:
-        # If you want strict filtering, return False here.
-        # For now, allow if tags missing (but print).
-        print(f"[WARN] No tags found for bucket={bucket}.")
-        return False  # strict mode recommended
-    return tags.get(LAB_BUCKET_TAG_KEY) == LAB_BUCKET_TAG_VALUE
+        print(f"Skip bucket without tags (strict mode): {bucket}")
+        return False
+
+    is_lab = tags.get(LAB_BUCKET_TAG_KEY) == LAB_BUCKET_TAG_VALUE
+    if not is_lab:
+        print(f"Skip non-lab bucket: {bucket}, tags={tags}")
+    return is_lab
 
 
 def _get_public_access_block(bucket: str) -> Optional[Dict[str, bool]]:
+    """
+    Fetch current Public Access Block configuration for the bucket.
+    """
     try:
         resp = s3.get_public_access_block(Bucket=bucket)
-        cfg = resp.get("PublicAccessBlockConfiguration", {})
-        # Normalize expected keys
+        cfg = resp.get("PublicAccessBlockConfiguration", {}) or {}
         return {
             "BlockPublicAcls": bool(cfg.get("BlockPublicAcls", False)),
             "IgnorePublicAcls": bool(cfg.get("IgnorePublicAcls", False)),
             "BlockPublicPolicy": bool(cfg.get("BlockPublicPolicy", False)),
             "RestrictPublicBuckets": bool(cfg.get("RestrictPublicBuckets", False)),
         }
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "Unknown")
+        # If PublicAccessBlock is not configured, AWS may return NoSuchPublicAccessBlockConfiguration
+        if code in ("NoSuchPublicAccessBlockConfiguration",):
+            return {
+                "BlockPublicAcls": False,
+                "IgnorePublicAcls": False,
+                "BlockPublicPolicy": False,
+                "RestrictPublicBuckets": False,
+            }
+        print(f"get_public_access_block ClientError for {bucket}: {code} {e}")
+        return None
     except Exception as e:
         print(f"get_public_access_block failed for {bucket}: {e}")
         return None
@@ -115,17 +119,37 @@ def _get_public_access_block(bucket: str) -> Optional[Dict[str, bool]]:
 
 def _severity_for_pab(cfg: Optional[Dict[str, bool]]) -> Tuple[str, str]:
     """
-    For this Lambda, we treat "BPA not fully ON" as WARNING (guardrail weakened).
-    We do NOT label CRITICAL here—CRITICAL comes from policy+state correlation in detector_policy.
+    For this detector, we only send WARNING when guardrail is weakened.
+    (CRITICAL is handled by detector_policy, which correlates policy + BPA state)
     """
     if not cfg:
         return "WARNING", "Public Access Block status unavailable; possible guardrail misconfig."
 
-    # If any of the four are False, guardrail is weakened
     weakened = any(v is False for v in cfg.values())
     if weakened:
         return "WARNING", "Public Access Block is not fully enabled (guardrail weakened)."
     return "INFO", "Public Access Block appears fully enabled."
+
+
+def _send_email_alert(subject: str, message: str) -> None:
+    """
+    Publish alert to SNS topic (email subscription sends the email).
+    """
+    if not SNS_TOPIC_ARN:
+        print("SNS_TOPIC_ARN is not set; skipping SNS publish.")
+        print("Subject:", subject)
+        print("Message:", message)
+        return
+
+    # SNS Subject has a limit; keep it short
+    subject = subject[:100]
+
+    resp = sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject,
+        Message=message,
+    )
+    print("SNS publish ok:", resp.get("MessageId"))
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -133,45 +157,41 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     bucket = _extract_bucket_name(event)
     if not bucket:
-        # Still notify for visibility, but mark as unknown bucket
-        msg = {
-            "content": "⚠️ [WARNING] S3 PublicAccessBlock change detected, but bucket name could not be parsed.",
-        }
-        _post_discord(msg)
+        _send_email_alert(
+            subject="[WARNING] S3 PublicAccessBlock change detected (bucket parse failed)",
+            message="A PutPublicAccessBlock event was detected via CloudTrail, but bucket name could not be parsed.\n"
+                    f"Raw event:\n{json.dumps(event)[:3000]}",
+        )
         return {"ok": True, "bucket": None}
 
-    # Strictly handle only lab bucket (recommended)
+    # Process only lab bucket (strict mode)
     if not _is_lab_bucket(bucket):
-        print(f"Skip non-lab bucket: {bucket}")
         return {"ok": True, "skipped": True, "bucket": bucket}
 
-    # Who/where
-    detail = event.get("detail", {})
+    # Who/where from CloudTrail detail
+    detail = event.get("detail", {}) or {}
     actor = _safe_get(detail, "userIdentity", "arn") or _safe_get(detail, "userIdentity", "principalId") or "unknown"
     src_ip = detail.get("sourceIPAddress", "unknown")
     user_agent = detail.get("userAgent", "unknown")
 
-    # Snapshot current BPA state (best practice: don't rely only on event payload)
+    # Snapshot current PAB state (do not rely only on request payload)
     pab = _get_public_access_block(bucket)
     severity, reason = _severity_for_pab(pab)
 
-    # Discord message (simple + readable)
     lines = [
-        f"🪣 Bucket: `{bucket}`",
-        f"🧑 Actor: `{actor}`",
-        f"🌐 SourceIP: `{src_ip}`",
-        f"🖥 UserAgent: `{user_agent}`",
-        f"📌 Reason: {reason}",
+        f"Bucket: {bucket}",
+        f"Severity: {severity}",
+        f"Reason: {reason}",
+        f"Actor: {actor}",
+        f"SourceIP: {src_ip}",
+        f"UserAgent: {user_agent}",
     ]
     if pab:
-        lines.append(
-            "🔎 PAB Snapshot: "
-            + ", ".join([f"{k}={str(v)}" for k, v in pab.items()])
-        )
+        lines.append("PAB Snapshot: " + ", ".join([f"{k}={v}" for k, v in pab.items()]))
 
-    payload = {
-        "content": f"⚠️ [{severity}] S3 PublicAccessBlock change detected\n" + "\n".join(lines)
-    }
-    _post_discord(payload)
+    subject = f"[{severity}] S3 PublicAccessBlock change: {bucket}"
+    message = "\n".join(lines)
+
+    _send_email_alert(subject, message)
 
     return {"ok": True, "bucket": bucket, "severity": severity}
