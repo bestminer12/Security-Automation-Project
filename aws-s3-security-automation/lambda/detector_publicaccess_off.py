@@ -1,50 +1,36 @@
-
 import json
 import os
 import urllib.request
 from typing import Any, Dict, Optional, Tuple
 from botocore.exceptions import ClientError
 from urllib.error import HTTPError
-
-
 import boto3
+
+
+
 
 s3 = boto3.client("s3")
 s3control = boto3.client("s3control")  # sometimes useful depending on event shape
 
-
+sns = boto3.client("sns")
+SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 LAB_BUCKET_TAG_KEY = os.environ.get("LAB_BUCKET_TAG_KEY", "Project")
 LAB_BUCKET_TAG_VALUE = os.environ.get("LAB_BUCKET_TAG_VALUE", "S3ExposureLab")
 
-
-def _post_discord(payload: dict) -> None:
-    if not DISCORD_WEBHOOK_URL:
-        print("DISCORD_WEBHOOK_URL is not set")
-        print("payload:", payload)
+def _send_email_alert(subject: str, message: str) -> None:
+    if not SNS_TOPIC_ARN:
+        print("SNS_TOPIC_ARN is not set; skipping SNS publish.")
+        print(subject)
+        print(message)
         return
 
-    data = json.dumps(payload).encode("utf-8")
-
-    req = urllib.request.Request(
-        DISCORD_WEBHOOK_URL,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    resp = sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject[:100],  # SNS subject 제한 고려
+        Message=message
     )
-
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            print("Discord status:", resp.status)
-            return
-
-    except HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore") if e.fp else ""
-        print("Discord HTTPError:", e.code, e.reason)
-        print("Discord body:", body)
-        if e.headers:
-            print("Retry-After:", e.headers.get("Retry-After"))
-        raise
+    print("SNS publish ok:", resp.get("MessageId"))
 
 def _safe_get(d: Dict[str, Any], *keys: str) -> Optional[Any]:
     cur: Any = d
