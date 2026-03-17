@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dev-readonly-binding
+  namespace: dev
+subjects:
+- kind: ServiceAccount
+  name: dev-readonly-sa
+  namespace: dev
+roleRef:
+  kind: Role
+  name: dev-readonly-role
+  apiGroup: rbac.authorization.k8s.io
