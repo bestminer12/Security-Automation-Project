@@ -132,6 +132,7 @@ This enforces governance and prevents risky privilege escalation paths.
 ---
 
 ## Project Structure
+```bash
 kubernetes-security-automation-architecture/
 ├── docker/
 │   ├── Dockerfile
@@ -147,10 +148,12 @@ kubernetes-security-automation-architecture/
 │   └── test-client.yaml
 ├── policy/
 │   └── check-rbac.sh
-├── .github/workflows/
-│   ├── trivy.yml
-│   └── rbac.yml
+├── .github/
+│   └── workflows/
+│       ├── trivy.yml
+│       └── rbac.yml
 └── README.md
+```
 ---
 
 ## Key Learning Outcomes
