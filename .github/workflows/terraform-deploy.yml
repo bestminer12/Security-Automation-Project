@@ -29,13 +29,13 @@ jobs:
         uses: hashicorp/setup-terraform@v3
       
       - name: Terraform Init
-        working-directory: aws-s3-security-automation/terraform
+        working-directory: 
         run: terraform init
       
       - name: Terraform Plan
-        working-directory: aws-s3-security-automation/terraform
+        working-directory: 
         run: terraform plan
       
       - name: Terraform Apply
-        working-directory: aws-s3-security-automation/terraform
+        working-directory: 
         run: terraform apply -auto-approve
