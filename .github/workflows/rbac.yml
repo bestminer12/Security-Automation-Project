@@ -1,0 +1,20 @@
+name: RBAC Policy Check
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'kubernetes-security-automation-architecture/k8s/**'
+      - 'policy/check-rbac.sh'
+      - '.github/workflows/rbac.yml'
+
+jobs:
+  rbac-policy-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run RBAC Policy Check
+        run: ./policy/check-rbac.sh
