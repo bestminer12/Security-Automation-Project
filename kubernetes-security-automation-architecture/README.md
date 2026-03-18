@@ -1,168 +1,182 @@
 # Kubernetes Security Automation Architecture
 
-## Overview
+This project demonstrates how Kubernetes security risks can be mitigated using automated security controls across both runtime and CI/CD pipeline layers.
 
-This project demonstrates a cloud-native security architecture focused on runtime security controls and build-time security automation in Kubernetes.
+The architecture simulates realistic attack scenarios such as service account abuse, lateral movement between namespaces, privileged container escalation, vulnerable image deployment, and over-privileged RBAC configuration.
 
-The objective is to move beyond basic workload deployment and implement security guardrails that reduce blast radius, enforce least privilege, and prevent insecure container deployment.
-
-The environment is built using a local Kubernetes cluster (Kind) to enable cost-efficient security experimentation and architecture validation.
+Security controls are implemented using Kubernetes native mechanisms and DevSecOps pipeline automation to prevent, detect, and block risky configurations before deployment.
 
 ---
 
-## Architecture Goals
+## Architecture Overview
 
-- Implement namespace-level workload isolation  
-- Enforce least-privilege access using Kubernetes RBAC  
-- Prevent east-west lateral movement using NetworkPolicy  
-- Block insecure container configurations using Pod Security Admission  
-- Integrate container image vulnerability scanning into CI pipeline  
-- Demonstrate security automation design suitable for DevSecOps environments  
+This project implements security controls across two major layers:
+
+### Runtime Security Layer (Cluster Level)
+
+- RBAC Least Privilege Enforcement  
+- Network Segmentation using NetworkPolicy  
+- Pod Security Admission for Privileged Container Blocking  
+
+### CI/CD Security Automation Layer (Pipeline Level)
+
+- Vulnerable Container Image Detection using Trivy  
+- Over-Privileged RBAC Detection using Policy Script  
+- Automatic Deployment Failure on Security Violation  
 
 ---
 
-## Environment
+## Threat Scenario Simulation
 
-- Kubernetes (Kind – Local Cluster)
-- Docker
-- Trivy
-- GitHub Actions
-- kubectl
-- Nginx sample workload
+The project simulates a full attacker lifecycle inside a Kubernetes cluster.
+
+### Scenario 1 — ServiceAccount Foothold
+
+A service account with limited permissions is created to simulate attacker foothold.
+
+The account can:
+
+- get pods
+- list services
+
+But cannot:
+
+- create pods
+- delete services
+
+This demonstrates reconnaissance capability without destructive permissions.
+
+Validation example:
+kubectl auth can-i get pods -n dev –as=system:serviceaccount:dev:dev-readonly-sa
+yes
+
+kubectl auth can-i create pods -n dev –as=system:serviceaccount:dev:dev-readonly-sa
+no
+
+---
+
+### Scenario 2 — Namespace Lateral Movement
+
+Initial state:
+
+A pod in the `prod` namespace is able to access a service in the `dev` namespace.
+kubectl exec -n prod test-client – wget -qO- http://
+After applying NetworkPolicy:
+
+Traffic from `prod` to `dev` is blocked.
+
+This demonstrates east-west traffic segmentation.
+
+---
+
+### Scenario 3 — Privilege Escalation Attempt
+
+An attacker attempts to deploy a privileged container.
+
+Pod Security Admission baseline policy blocks the deployment.
+Error: violates PodSecurity “baseline”
+securityContext.privileged=true is not allowed
+This prevents node-level compromise.
+
+---
+
+### Scenario 4 — Vulnerable Image Deployment Attempt
+
+A vulnerable Node.js container image is intentionally built.
+
+Trivy scan runs in GitHub Actions pipeline.
+
+If HIGH or CRITICAL vulnerabilities are detected:
+
+Deployment pipeline fails automatically.
+
+Pipeline logic:
+docker build -t vuln-app ./kubernetes-security-automation-architecture/docker
+
+Trivy scan:
+severity: HIGH,CRITICAL
+exit-code: 1
+This prevents vulnerable workloads from reaching runtime.
+
+---
+
+### Scenario 5 — Over-Privileged RBAC Deployment Attempt
+
+A dangerous RBAC role is defined with wildcard permissions.
+verbs: [””]
+resources: [””]
+apiGroups: [”*”]
+A custom policy script runs in CI pipeline:
+grep -r ‘verbs: "\*"’ kubernetes-security-automation-architecture/k8s
+If detected:
+
+Pipeline exits with code 1 and deployment is blocked.
+
+GitHub Actions result:
+Over-privileged RBAC detected
+Process completed with exit code 1
+This enforces governance and prevents risky privilege escalation paths.
+
+---
+
+## Security Control Mapping
+
+| Threat | Control | Layer |
+|------|--------|------|
+| ServiceAccount abuse | RBAC least privilege | Runtime |
+| Lateral movement | NetworkPolicy segmentation | Runtime |
+| Privileged container escalation | Pod Security Admission | Runtime |
+| Vulnerable image deployment | Trivy scan | CI/CD |
+| Over-privileged RBAC | Policy automation script | CI/CD |
 
 ---
 
 ## Project Structure
 kubernetes-security-automation-architecture/
-├── k8s/
 ├── docker/
-├── ci/
-├── screenshots/
-├── threat-model/
+│   ├── Dockerfile
+│   └── app.js
+├── k8s/
+│   ├── namespace.yaml
+│   ├── dev-readonly-serviceaccount.yaml
+│   ├── dev-readonly-role.yaml
+│   ├── dev-readonly-rolebinding.yaml
+│   ├── network-policy-deny.yaml
+│   ├── privileged-pod.yaml
+│   ├── overprivileged-role.yaml
+│   └── test-client.yaml
+├── policy/
+│   └── check-rbac.sh
+├── .github/workflows/
+│   ├── trivy.yml
+│   └── rbac.yml
 └── README.md
 ---
 
-## Security Controls Implemented
+## Key Learning Outcomes
 
-### 1. Namespace Isolation
-
-Two namespaces were created to simulate environment separation:
-
-- dev
-- prod
-
-This design reduces blast radius and allows namespace-scoped security enforcement.
-
----
-
-### 2. Least Privilege RBAC
-
-A dedicated ServiceAccount was created with read-only permissions in the dev namespace.
-
-Security benefits:
-
-- Prevents unauthorized resource modification  
-- Enables scoped access control  
-- Supports principle of least privilege  
-
-Validation was performed using: kubectl auth can-i
----
-
-### 3. NetworkPolicy – Lateral Movement Prevention
-
-A NetworkPolicy was implemented to restrict ingress traffic to the nginx workload.
-
-This prevents unauthorized east-west communication between namespaces.
-
-Security impact:
-
-- Limits attacker movement after initial compromise  
-- Reduces internal attack surface  
-- Enables micro-segmentation  
-
----
-
-### 4. Pod Security Admission Enforcement
-
-The restricted Pod Security Admission profile was enforced on the prod namespace.
-
-This blocks:
-
-- Privileged containers  
-- Host access configurations  
-- Unsafe security contexts  
-
-This control prevents container breakout risks and enforces secure workload deployment standards.
-
----
-
-## Container Image Security (CI Integration)
-
-Container image scanning is integrated using Trivy.
-
-Pipeline behavior:
-
-- Docker image is built during CI
-- Trivy scans image vulnerabilities
-- CI fails if HIGH or CRITICAL vulnerabilities are detected
-
-Security benefits:
-
-- Prevents insecure images from reaching runtime  
-- Shifts security validation to build phase  
-- Enables DevSecOps automation  
-
----
-
-## Threat Model
-
-Threat scenarios considered:
-
-### Privileged Container Risk
-- Host resource access  
-- Kernel capability abuse  
-- Container escape potential  
-
-### Lateral Movement Risk
-- Cross-namespace service discovery  
-- Internal network pivoting  
-
-### RBAC Over-Privilege Risk
-- Excessive API permissions  
-- Unauthorized resource modification  
-
-Mitigations implemented through:
-- PSA enforcement  
-- Network segmentation  
-- Least privilege role design  
-
----
-
-## Screenshots
-
-Security validation evidence is available in the screenshots/ directory.
-
-Examples:
-
-- Namespace creation
-- RBAC access validation
-- NetworkPolicy traffic blocking
-- PSA privileged pod rejection
-- Trivy vulnerability scan results
+- Demonstrates realistic Kubernetes attack paths and mitigations  
+- Shows how runtime security controls and CI pipeline security must work together  
+- Implements security automation that prevents insecure deployments  
+- Applies least privilege and network segmentation principles  
+- Builds a cloud incident response oriented architecture  
 
 ---
 
 ## Future Improvements
 
-- Policy as Code enforcement (Kyverno / OPA Gatekeeper)
-- Runtime threat detection integration
-- Security alert pipeline integration
-- Automated rollback on policy violations
+- OPA Gatekeeper policy enforcement  
+- Falco runtime threat detection  
+- Admission Controller mutation policies  
+- Container image signing and verification  
+- Centralized alerting integration (Slack / Discord)
 
 ---
 
 ## Conclusion
 
-This project demonstrates how Kubernetes security controls can be combined with CI security automation to build a practical DevSecOps security architecture.
+This project highlights how Kubernetes environments can be protected using layered security automation.
 
-It focuses not only on deploying workloads but on preventing insecure deployment patterns and reducing attack surface through automated guardrails.
+By combining runtime controls and CI pipeline enforcement, risky configurations are blocked before reaching production workloads.
+
+The architecture reflects real-world cloud security and incident response scenarios.
